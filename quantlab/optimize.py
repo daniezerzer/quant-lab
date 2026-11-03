@@ -100,3 +100,71 @@ def train_test_sma(prices: pd.Series, split_date, fast_grid, slow_grid,
             prices, strategies.buy_and_hold(prices), cost_bps
         ).returns.loc[split:],
     )
+
+
+@dataclass
+class WalkForwardResult:
+    oos_returns: pd.Series          # stitched-together out-of-sample returns
+    choices: pd.DataFrame           # one row per window: dates, chosen pair, train and test Sharpe
+    default_returns: pd.Series      # fixed textbook pair over the same dates
+    buy_hold_returns: pd.Series     # buy & hold over the same dates
+
+
+def walk_forward_sma(prices: pd.Series, fast_grid, slow_grid, train_years: int = 5,
+                     test_years: int = 1, cost_bps: float = 5.0,
+                     default: tuple[int, int] = (50, 200)) -> WalkForwardResult:
+    """Walk-forward validation: re-pick the parameters every period, using only the past.
+
+    A single train/test split can be lucky or unlucky. Walk-forward repeats the honest
+    procedure many times, the way you would really have traded it:
+
+        every `test_years`, look back `train_years`, pick the best pair on that window,
+        trade that pair for the next `test_years`, then repeat.
+
+    The returns from all the "trade it for the next period" windows are stitched into one
+    out-of-sample record that was never used to choose anything.
+
+    Simplification: each window's returns come from an independent backtest of the chosen
+    pair, so the small cost of switching between pairs at window boundaries is not charged.
+    """
+    pairs = [(f, s) for f, s in itertools.product(fast_grid, slow_grid) if f < s]
+    all_returns = {p: sma_returns(prices, p[0], p[1], cost_bps) for p in pairs}
+
+    first_valid = prices.index[max(slow_grid)]
+    last_date = prices.index[-1]
+    test_start = first_valid + pd.DateOffset(years=train_years)
+
+    pieces, rows = [], []
+    while test_start <= last_date:
+        test_end = test_start + pd.DateOffset(years=test_years) - pd.Timedelta(days=1)
+        train_start = test_start - pd.DateOffset(years=train_years)
+        train_end = test_start - pd.Timedelta(days=1)
+
+        train_scores = {
+            p: metrics.sharpe_ratio(r.loc[train_start:train_end]) for p, r in all_returns.items()
+        }
+        best = max(train_scores, key=lambda p: train_scores[p])
+        window = all_returns[best].loc[test_start:test_end]
+        if window.empty:
+            break
+        pieces.append(window)
+        rows.append({
+            "test_start": test_start,
+            "test_end": min(test_end, last_date),
+            "fast": best[0],
+            "slow": best[1],
+            "train_sharpe": train_scores[best],
+            "test_sharpe": metrics.sharpe_ratio(window),
+        })
+        test_start = test_start + pd.DateOffset(years=test_years)
+
+    oos = pd.concat(pieces)
+    default_all = all_returns[default] if default in all_returns else sma_returns(
+        prices, default[0], default[1], cost_bps)
+    buy_hold_all = run_backtest(prices, strategies.buy_and_hold(prices), cost_bps).returns
+    return WalkForwardResult(
+        oos_returns=oos,
+        choices=pd.DataFrame(rows),
+        default_returns=default_all.loc[oos.index[0]:oos.index[-1]],
+        buy_hold_returns=buy_hold_all.loc[oos.index[0]:oos.index[-1]],
+    )

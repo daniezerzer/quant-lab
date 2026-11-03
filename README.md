@@ -22,6 +22,7 @@ python -m pytest                 # all tests should pass
 python scripts/explore.py        # market data, basic risk stats       -> docs/explore.png
 python scripts/compare.py        # SMA 50/200 vs buy & hold, with costs -> docs/compare.png
 python scripts/sweep.py          # parameter sweep + out-of-sample test -> docs/sweep.png
+python scripts/robustness.py     # confidence intervals + walk-forward -> docs/robustness.png
 ```
 
 On Windows, `run_all.bat` runs the tests and all analysis scripts and saves the output to `results.txt`.
@@ -33,7 +34,10 @@ On Windows, `run_all.bat` runs the tests and all analysis scripts and saves the 
   that happens on the day it decides to buy.
 - **Costs.** Every change of position is charged `cost_bps` (default 5 bps).
 - **Out-of-sample testing.** Parameters are chosen on data before a split date and judged on
-  data after it. A test checks that changing future prices can never change the training results.
+  data after it, and also re-chosen every year in a walk-forward test. Tests check that
+  changing future prices can never change earlier choices.
+- **Uncertainty.** Block-bootstrap confidence intervals on Sharpe ratios and on differences
+  between strategies.
 - **Metrics.** Annualised return, volatility, Sharpe ratio, maximum drawdown.
 
 ## Findings
@@ -65,14 +69,66 @@ Chart: `docs/sweep.png`.
   on unseen data, and the rank correlation between train and test Sharpe was -0.31: settings
   that looked best before 2016 did not do better after it. The pair that won on train, 30/200,
   was only marginally different from the untuned textbook 50/200.
-- **The trend filter lagged in a strong bull market.** Buy & hold beat every SMA variant on
-  both return and Sharpe over 2016-2026.
+- **The trend filter lagged in a strong bull market.** Buy & hold had the higher return
+  (14.7% vs 9.5%) and a higher Sharpe estimate over 2016-2026, although the Sharpe gap is
+  within the statistical noise (see the confidence intervals below).
 - **No drawdown protection in the test period.** The 2020 crash was too fast for a 200-day
   filter: all three had a maximum drawdown of about -33%. Trend following helped in the slow
   2008 decline but not in a sudden crash.
 - **Limits.** One asset, one split, 29 combinations, few trades, and a period that was
-  unusually strong for US equities. Next: walk-forward validation and confidence intervals
-  on the Sharpe ratio.
+  unusually strong for US equities.
+
+### How certain are these numbers? (bootstrap confidence intervals)
+
+Sharpe ratios measured on a few years of data are estimates with a margin of error. I
+resampled the daily returns 2,000 times in 21-day blocks (blocks keep calm and stormy
+periods together) to measure that margin. SPY, 2016 onwards:
+
+| | Sharpe | 95% confidence interval |
+|---|---|---|
+| SMA 30/200 (picked on train) | 0.73 | 0.08 to 1.50 |
+| SMA 50/200 (textbook) | 0.68 | 0.13 to 1.36 |
+| Buy & hold | 0.87 | 0.31 to 1.50 |
+
+| Difference in Sharpe (A minus B, same dates) | Estimate | 95% interval |
+|---|---|---|
+| SMA 30/200 minus buy & hold | -0.14 | -0.50 to +0.29 |
+| SMA 50/200 minus buy & hold | -0.18 | -0.48 to +0.16 |
+
+Ten years of daily data cannot separate a Sharpe of 0.7 from one of 0.9: the intervals
+overlap almost completely and every difference includes zero. The rankings in the tables
+above are therefore not statistically meaningful.
+
+### Walk-forward validation
+
+A single split can be lucky or unlucky, so I repeated the honest procedure every year:
+look back 5 years, pick the best SMA pair, trade it for the next year, repeat. The 16
+yearly windows from 2011 to 2026 are stitched into one record that was never used to
+choose anything (`docs/robustness.png`).
+
+| 2011-2026, out of sample | Return/yr | Volatility | Sharpe | Max drawdown |
+|---|---|---|---|---|
+| Walk-forward SMA | 7.5% | 13.0% | 0.62 | -26.7% |
+| SMA 50/200 (textbook) | 9.1% | 14.3% | 0.68 | -33.7% |
+| Buy & hold | 13.9% | 17.0% | 0.85 | -33.7% |
+
+- **The chosen parameters were unstable.** The best pair changed in 9 of 15 yearly
+  re-selections, jumping between short and long windows.
+- **A good training score did not predict the next year.** Chosen pairs had training
+  Sharpe ratios of 0.55 to 1.26, yet the following year's Sharpe ranged from -1.36 to 2.37.
+- **Re-optimising did not beat doing nothing clever.** Walk-forward minus textbook 50/200:
+  -0.06 (interval -0.30 to +0.16). Walk-forward minus buy & hold: -0.23 (interval -0.49 to
+  +0.02), borderline but not conclusive.
+- **Drawdown was shallower** (-26.7% against -33.7%), but I did not test whether that
+  difference is significant.
+
+### Conclusion so far
+
+On SPY, a simple moving-average trend rule lowers volatility and sometimes the worst
+loss, but I found no demonstrable improvement in risk-adjusted return over buy and hold,
+and tuning its parameters added nothing out of sample. The honest summary is that the
+data cannot show the rule is better, and cannot show it is worse. This was a single
+asset and a simple strategy; it says nothing about strategies in general.
 
 ## Roadmap
 
@@ -81,15 +137,16 @@ Chart: `docs/sweep.png`.
 - [x] Backtesting engine (no look-ahead bias, transaction costs)
 - [x] Strategy: SMA crossover vs buy & hold
 - [x] Parameter sweep and train/test validation
+- [x] Walk-forward validation
+- [x] Bootstrap confidence intervals on Sharpe ratios
 - [ ] More strategies: momentum, mean reversion
-- [ ] Walk-forward validation
+- [ ] More assets (equities, bonds, gold) and multi-asset portfolios
 - [ ] Portfolio optimisation and Monte Carlo risk simulation
-- [ ] Write-up of findings
 
 ## Layout
 
 ```
-quantlab/     the library (data, metrics, backtest, strategies, optimize)
+quantlab/     the library (data, metrics, backtest, strategies, optimize, stats)
 tests/        pytest unit tests
 scripts/      runnable experiments
 docs/         charts produced by the scripts

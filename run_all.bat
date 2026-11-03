@@ -1,5 +1,5 @@
 @echo off
-rem Runs the tests, the strategy comparison and the parameter sweep.
+rem Runs the tests and all analysis scripts.
 rem Everything printed is also saved to results.txt
 cd /d "%~dp0"
 call .venv\Scripts\activate.bat
@@ -12,6 +12,9 @@ call .venv\Scripts\activate.bat
   echo.
   echo === sweep ===
   python scripts\sweep.py
+  echo.
+  echo === robustness ===
+  python scripts\robustness.py
 ) > results.txt 2>&1
 type results.txt
 echo.

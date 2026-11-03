@@ -49,6 +49,39 @@ def test_changing_test_prices_cannot_change_the_train_results():
     assert (a.best_fast, a.best_slow) == (b.best_fast, b.best_slow)
 
 
+def test_walk_forward_windows_do_not_overlap_and_move_forward():
+    prices = random_walk(n=3000)
+    wf = optimize.walk_forward_sma(prices, FAST, SLOW, train_years=3, test_years=1)
+    starts = wf.choices["test_start"]
+    assert starts.is_monotonic_increasing
+    assert (wf.choices["test_end"] >= starts).all()
+    assert wf.oos_returns.index.is_unique
+
+
+def test_walk_forward_has_no_lookahead():
+    """Changing prices from date D onward must not change any choice made for a window
+    that starts on or before D, because those choices only look at earlier data."""
+    prices = random_walk(n=3000)
+    wf_a = optimize.walk_forward_sma(prices, FAST, SLOW, train_years=3, test_years=1)
+    cut = wf_a.choices["test_start"].iloc[4]
+    altered = prices.copy()
+    altered.loc[cut:] = altered.loc[cut:] * 2.5
+    wf_b = optimize.walk_forward_sma(altered, FAST, SLOW, train_years=3, test_years=1)
+    early_a = wf_a.choices[wf_a.choices["test_start"] <= cut][["test_start", "fast", "slow"]]
+    early_b = wf_b.choices[wf_b.choices["test_start"] <= cut][["test_start", "fast", "slow"]]
+    pd.testing.assert_frame_equal(early_a.reset_index(drop=True), early_b.reset_index(drop=True))
+
+
+def test_walk_forward_oos_matches_chosen_pair_in_each_window():
+    prices = random_walk(n=3000)
+    wf = optimize.walk_forward_sma(prices, FAST, SLOW, train_years=3, test_years=1)
+    row = wf.choices.iloc[2]
+    expected = optimize.sma_returns(prices, int(row["fast"]), int(row["slow"])).loc[
+        row["test_start"]:row["test_end"]]
+    actual = wf.oos_returns.loc[row["test_start"]:row["test_end"]]
+    pd.testing.assert_series_equal(actual, expected)
+
+
 def test_rank_is_within_range():
     prices = random_walk()
     res = optimize.train_test_sma(prices, "2017-06-01", FAST, SLOW)
